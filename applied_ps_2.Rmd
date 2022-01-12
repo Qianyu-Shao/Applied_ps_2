@@ -1,0 +1,475 @@
+---
+title: "Applied Problem Set 2"
+author: "Qianyu Shao & Sandra Dai"
+date: "01/11/2021"
+output: 
+  pdf_document:
+    
+
+    latex_engine: xelatex
+  html_document: default
+---
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+```
+
+<!-- .Rmd files use  markdown, a text mark up language, to provide formating.--> 
+<!--Text include within these strange arrows are comments and will not show up when you knit-->
+
+# Front matter
+
+Add your collaborators: **Sandro**
+
+Late coins used this pset: 2. Late coins left: 8. 
+<!--You may use up to two for a given assignment.)-->
+
+# Problems
+## Part 1
+###  Read in one percent sample 
+
+```{r}
+start.time <- Sys.time()
+pt <- read.csv("parking_tickets_one_percent.csv")
+end.time <- Sys.time()
+end.time-start.time
+
+library(testthat)
+test_that('row numbers correct', {
+    expect_equal(nrow(pt), 287458)
+})
+```
+2.
+```{r}
+file.info("parking_tickets_one_percent.csv")
+83942807/1048576
+```
+
+The file is 80.0541 megabytes. Given that this is only the sample containing ticket numbers that end in 01, which is generally 1/100 of full data set. The size of full data set might be 8005.41M.
+
+3.
+It's ordered by issue date.
+
+4.
+```{r}
+
+pt %>% summarise(across(everything(), ~ sum(is.na(.))))
+#from https://stackoverflow.com/questions/24027605/determine-the-number-of-na-values-in-a-column
+
+```
+
+5.
+The top three variables with most missing values are zipcode, hearing disposition and 
+notice level. Some of them having "Define" under variable ticket_queue, which means city cannot identify the vehicle owner, thus zipcode, hearing disposition and 
+notice level are all can't be obtained in this circumstance. Also, variable hearing disposition is blank unless the ticket was contested.
+
+## Cleaning the data and benchmarking
+
+1. 
+22364 tickets were issued in 2017, which implies around 2236400 tickets were isuued in total. According to ProPublica,the City of Chicago issues more than 3 million tickets each year. I think this is meaningful as being interpreted as that picking tickets ending with 01 is not so representative for full data set.
+```{r}
+pt <- pt %>%
+  mutate(year = str_extract(issue_date, "\\d{1,4}"))
+pt %>%
+  filter(year == "2017") %>%
+  nrow()
+
+
+```
+
+2.
+
+```{r}
+pt %>% 
+  group_by(violation_description) %>%
+  count() %>%
+  arrange(-n) %>%
+  head(20) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_col(aes(x = violation_description, y = n)) +
+  theme(axis.text.x = element_text(angle = 90))+
+  coord_flip()
+
+```
+
+
+## Joins - unit
+
+1. 
+29 rows have missing data for Unit.
+
+2.
+There are 385 units in unit_key.
+```{r}
+uk <- read.csv("unit_key.csv",encoding = "UTF-8")
+uk <- uk %>% 
+  rename(unit = X.U.FEFF.Reporting.District) 
+uk %>%
+  count(unit) %>%
+  nrow()
+  
+```
+
+
+
+
+3.
+287429 rows in tickets are matched,
+29 rows in tickets are unmatched.
+128 rows in unit_key are matched,
+257 rows are not.
+```{r}
+pt <- pt %>% 
+  mutate(unit=as.character(unit)) %>%
+  left_join(uk, by = "unit") 
+
+pt1 <- pt %>% 
+  mutate(unit=as.character(unit)) %>%
+  full_join(uk, by = "unit") 
+
+287715-287458
+sum(is.na(uk$Department.Name))
+
+```
+
+
+4.
+
+DOF issued more tickets.
+1160 N. Larrabee, 6464 N. Clark, OEMC, 3315 W. Ogden, 5555 W. Grand are the top 5 deparments under CPO issued the most tickets.
+```{r}
+pt %>% count(unit_description) %>% arrange(-n)
+pt %>% 
+  count(unit_description, Department.Description,sort = TRUE) %>%
+  head(8)
+
+```
+
+
+## Joins - ZIP code 
+
+1.
+```{r}
+zip <- read.csv("chi_zips.csv",encoding="UTF-8")
+zip <- zip %>% rename(zipcode=X.U.FEFF.ZIP) %>%
+  mutate(zipcode=as.character(zipcode))
+
+library(tidycensus)
+ACS_VARS_18<-load_variables(2018,"acs5",cache=TRUE)
+
+acs_data<-get_acs(
+  geography = "zcta",
+  variables=c("B01003_001","B02001_003","B06011_001"),
+  year=2018,
+  state = "IL"
+)
+
+acs_data <- acs_data %>%
+  select(-moe) %>%
+  pivot_wider(names_from = variable,
+              values_from = estimate) %>%
+  rename(population=B01003_001,
+         race=B02001_003,
+         median_income=B06011_001) %>%
+  filter(!is.na(population)) %>%
+  filter(!is.na(race)) %>%
+    filter(!is.na(median_income))
+  
+pt <- pt %>% 
+  mutate(zipcode = str_extract(zipcode, "\\d{1,5}")) %>%
+  filter(!is.na(zipcode)) %>%
+  left_join(acs_data, by = c("zipcode"="GEOID"))
+
+pt %>%
+  filter(ticket_queue!="paid") %>%
+  filter(!is.na(population)) %>%
+  count(population, zipcode) %>%
+  mutate(unpaid = n/population) %>%
+  arrange(-unpaid) %>%
+  head(3)
+
+
+```
+
+
+4.
+```{r}
+zip_unpaid <- pt %>%
+  filter(ticket_queue!="paid") %>%
+  filter(!is.na(population)) %>%
+  count(population, zipcode) %>%
+  mutate(unpaid = n/population)
+
+map<-get_acs(
+  geography = "zcta",
+  variables=c("B01003_001","B02001_003","B06011_001"),
+  year=2018,
+  state = "IL", 
+  geometry=TRUE
+  ) %>% 
+  inner_join(zip_unpaid, by = c("GEOID"="zipcode")) %>%
+  inner_join(zip, by = c("GEOID"="zipcode")) %>%
+  filter(!is.na(unpaid)) %>%
+  ggplot(aes(fill=unpaid, color=unpaid))+
+  geom_sf()+
+  labs(title = "",
+       caption="")
+map
+```
+
+
+
+# Part II
+## Understanding the structure of the data
+1.
+```{r}
+fine <- pt %>%
+  filter(fine_level2_amount<2*fine_level1_amount) %>%
+  count(violation_code) %>%
+  filter(n>100)
+fine
+pt %>%
+  filter(violation_code %in% fine$violation_code) %>%
+  mutate(unpaid_increase = fine_level2_amount-fine_level1_amount) %>%
+  count(violation_code,violation_description,unpaid_increase)
+  
+  
+```
+
+
+2.
+```{r}
+ knitr::include_graphics("graph.png")
+```
+
+3.
+```{r}
+vd <- pt %>%
+  count(violation_description,violation_code) %>%
+  count(violation_description) %>%
+  filter(n>1)
+
+pt %>%
+  filter(violation_description %in% vd$violation_description) %>%
+  count(violation_description, violation_code)
+
+```
+
+4.
+```{r}
+vc <- pt %>%
+  count(violation_description,violation_code) %>%
+  count(violation_code) %>%
+  filter(n>1)
+pt %>%
+  filter(violation_code %in% vc$violation_code) %>%
+  count(violation_code, violation_description)
+
+
+```
+
+5.
+For example, "EXPIRED PLATES OR TEMPORARY REGISTRATION" and "EXPIRED PLATE OR TEMPORARY REGISTRATION" have different violation_code.
+
+```{r}
+vd50 <- pt %>%
+  count(violation_description, sort = TRUE) %>%
+  head(50)
+
+pt %>% 
+  filter(violation_description %in% vd50$violation_description) %>%
+  count(violation_description,violation_code)
+```
+
+## Revenue increase from “missing city sticker” tickets 
+
+1.
+The new code is "0964125B", the old is "0964125" and "0976170".
+The intial cost is 200 and 120.
+```{r}
+pt %>%
+  mutate(sticker=str_extract(pt$violation_description, ".STICKER.")) %>%
+  filter(!is.na(sticker)) %>%
+  select(violation_description, violation_code, fine_level1_amount,year) %>%
+  count(violation_description, violation_code, fine_level1_amount,year)
+
+```
+
+
+
+2.
+There is no obvious trend for number of missing sticker tickets over years. They keep around 2000 per year.
+```{r}
+pt %>%
+  mutate(sticker=str_extract(pt$violation_description, ".STICKER.")) %>%
+  filter(!is.na(sticker)) %>%
+  select(violation_description, violation_code, fine_level1_amount,year) %>%
+  count(year)
+```
+
+3.
+Maybe 2012-02-25.
+
+```{r}
+library(lubridate)
+
+pt %>%
+  filter(violation_code == "0964125B") %>%
+  select(issue_date) %>%
+  arrange() %>%
+  head(1)
+  
+```
+
+4.
+It should have been 10 million.
+```{r}
+revenue_2011 <- pt %>%
+  filter(year=="2011"&ticket_queue=="Paid") %>%
+  filter(violation_code=="0964125"|violation_code=="0976170") %>%
+  mutate(revenue=sum(total_payments)) %>%
+  select(revenue) %>%
+  head(1)
+
+revenue_2012 <- pt %>%
+  filter(year=="2012"&ticket_queue=="Paid") %>%
+  filter(violation_code=="0964125C"|violation_code=="0964125B") %>%
+  mutate(revenue=sum(total_payments)) %>%
+  select(revenue) %>%
+  head(1)
+
+(revenue_2012-revenue_2011)*100
+```
+
+
+5.
+After the increase, the repayment rate is 0.49.
+Before the increase, the repayment rate is 0.54.
+If the number of issued tickets stays constant, the revenue would increase by just 14.94%.
+
+```{r}
+#After the fine increase
+pt %>%
+  filter(year=="2012") %>%
+  filter(violation_code=="0964125C"|violation_code=="0964125B") %>%
+  count(ticket_queue) %>%
+  mutate(all_ticket_issued = sum(n), repayment_rate = n/all_ticket_issued)
+#Before the fine increase  
+pt %>%
+  filter(year=="2011") %>%
+  filter(violation_code=="0976170"|violation_code=="0964125") %>%
+  count(ticket_queue) %>%
+  mutate(all_ticket_issued = sum(n), repayment_rate = n/all_ticket_issued)
+
+#revenue change after increasing ticket cost from 120 to 200, if not started issuing more of these tickets.
+(200*0.49-120*0.54)/120*0.54
+
+```
+6.
+
+```{r}
+map <- pt %>%
+  mutate(sticker=str_extract(pt$violation_description, ".STICKER.")) %>%
+  filter(!is.na(sticker)) %>%    
+  group_by(year) %>%
+  count(ticket_queue) %>%
+  mutate(all_ticket_issued = sum(n), repayment_rate = n/all_ticket_issued) %>%
+  filter(ticket_queue == "Paid") %>%
+  select(ticket_queue,repayment_rate) %>%
+  ungroup() %>%
+  ungroup()
+
+map %>% ggplot(aes(x=year,y=repayment_rate))+
+  geom_line(group = 1)+
+  geom_vline(aes(xintercept = "2012"), color="blue")
+
+
+
+
+```
+
+7.
+For 2010 and 2011, "EXPIRED METER OR OVERSTAY", "EXPIRED PLATES OR TEMPORARY REGISTRATION" and "STREET CLEANING" have the most paid tickets, so I suggest we should 
+increase the amount of fine on these tickets.
+
+```{r}
+pt %>%
+  filter(year == "2011") %>% 
+  filter(ticket_queue == "Paid") %>%
+  count(violation_description) %>%
+  arrange(-n) %>%
+  head(5)
+  
+pt %>%
+  filter(year == "2010") %>% 
+  filter(ticket_queue == "Paid") %>%
+  count(violation_description) %>%
+  arrange(-n) %>%
+  head(5)
+  
+
+```
+
+
+8.
+a.
+Using tickets data in 2011, among the top 10 mostly paid tickets, the total amount of
+tickets paid by high income neighborhoods is more than those by low income neighborhood for the following kinds of tickets:
+
+EXPIRED METER OR OVERSTAY;
+NO STANDING/PARKING TIME RESTRICTED;
+REAR AND FRONT PLATE REQUIRED;
+RESIDENTIAL PERMIT PARKING;
+RUSH HOUR PARKING;
+STREET CLEANING
+
+b.
+About 62 million increase in revenue using number of tickets paid in 2011.
+```{r}
+pt %>% 
+  filter(!is.na(median_income)) %>%
+  distinct(zipcode,.keep_all = TRUE) %>%
+  summarise(median=median(median_income))
+
+pt <- pt %>%
+  filter(!is.na(median_income)) %>%
+ mutate(income_level = if_else(median_income > 30773, "high", "low"))
+
+
+high_paid_tickets <- pt %>%
+  filter(year == "2011") %>% 
+  filter(ticket_queue == "Paid") %>%
+  count(violation_description) %>%
+  arrange(-n) %>%
+  select(violation_description) %>%
+  head(10)
+
+pt %>%
+  filter(year=="2011") %>%
+  filter(violation_description %in% high_paid_tickets$violation_description) %>%
+  filter(ticket_queue == "Paid") %>%
+  count(violation_description,income_level) %>%
+  ggplot(aes(x=violation_description, y=n, fill=income_level))+
+  geom_col(position = "dodge")+
+  coord_flip()+
+  theme(axis.text.x = element_text(angle = 90))
+  
+pt %>%
+  filter(year=="2011") %>%
+  filter(violation_description %in% high_paid_tickets$violation_description) %>%
+  filter(ticket_queue == "Paid") %>%
+  count(violation_description,income_level) %>%
+  pivot_wider(names_from = income_level, values_from = n) %>%
+  filter(high>low) %>%
+  summarise(increase_revenue = sum(high+low)*80*100)
+
+```
+
+
+
+
+
+
+
+
+
